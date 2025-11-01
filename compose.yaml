@@ -1,0 +1,31 @@
+services:
+  gitea:
+    image: docker.gitea.com/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    environment:
+      - USER_UID=${USER_UID:-1000}
+      - USER_GID=${USER_GID:-1000}
+      - GITEA__database__DB_TYPE=${DB_TYPE}
+      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
+      - GITEA__server__ROOT_URL=${GITEA_ROOT_URL}
+      - GITEA__server__SSH_DOMAIN=${GITEA_SSH_DOMAIN}
+      - GITEA__server__SSH_PORT=${GITEA_SSH_PORT}
+      - GITEA__server__SSH_LISTEN_PORT=${GITEA_SSH_LISTEN_PORT}
+      - GITEA__service__DISABLE_REGISTRATION=${DISABLE_REGISTRATION}
+      - GITEA__repository__ENABLE_PUSH_CREATE_USER=${ENABLE_PUSH_CREATE_USER}
+      - GITEA__repository__ENABLE_PUSH_CREATE_ORG=${ENABLE_PUSH_CREATE_ORG}
+    volumes:
+      - ${GITEA_DATA_PATH}:/data
+      - ${GITEA_CONFIG_PATH}:/etc/gitea
+      - ${TIMEZONE_PATH}:/etc/timezone:ro
+      - ${LOCALTIME_PATH}:/etc/localtime:ro
+    ports:
+      - "${GITEA_HTTP_PORT}:3000"
+      - "${GITEA_SSH_PORT}:22"
+    networks:
+      - gitea
+
+networks:
+  gitea:
+    external: false

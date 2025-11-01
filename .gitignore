@@ -1,0 +1,30 @@
+# Environment variables (contains sensitive data)
+.env
+
+# Docker volumes and data directories
+data/
+config/
+
+# Backups
+*.tar.gz
+*.zip
+*.backup
+
+# Logs
+*.log
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+tmp/
+temp/
