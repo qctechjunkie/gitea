@@ -161,7 +161,7 @@ If you're coming from the old SQLite-based setup, migrate the DB before switchin
    docker compose ps
    ```
 
-5. **Run pgloader from a temporary container** — no host install needed:
+5. **Run pgloader from a temporary container** — no host install needed. On Synology DSM (and any host where your user isn't in a `docker` group), prepend `sudo`:
    ```bash
    docker run --rm --network gitea_gitea \
      -v /tmp/gitea.db:/tmp/gitea.db \
@@ -169,7 +169,14 @@ If you're coming from the old SQLite-based setup, migrate the DB before switchin
      pgloader sqlite:///tmp/gitea.db \
        postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
    ```
-   > The network name is `<project>_gitea` — `gitea_gitea` if you're running from this directory. Adjust with `docker network ls` if unsure.
+   > The network name depends on how the stack was imported — `<project>_gitea` for docker compose, but Komodo may name it `<stack>_default` or similar. Confirm with `docker network ls | grep gitea`.
+   >
+   > If Gitea has ever booted against this Postgres and left tables behind, pgloader will error on constraint conflicts. Drop and recreate the DB first:
+   > ```bash
+   > docker exec -i gitea-db psql -U ${POSTGRES_USER} -d postgres \
+   >   -c "DROP DATABASE ${POSTGRES_DB};" \
+   >   -c "CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER};"
+   > ```
 
 6. **Start Gitea:**
    ```bash
