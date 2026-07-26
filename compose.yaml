@@ -1,31 +1,70 @@
-services:
-  gitea:
-    image: docker.gitea.com/gitea:latest
-    container_name: gitea
-    restart: unless-stopped
-    environment:
-      - USER_UID=${USER_UID:-1000}
-      - USER_GID=${USER_GID:-1000}
-      - GITEA__database__DB_TYPE=${DB_TYPE}
-      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
-      - GITEA__server__ROOT_URL=${GITEA_ROOT_URL}
-      - GITEA__server__SSH_DOMAIN=${GITEA_SSH_DOMAIN}
-      - GITEA__server__SSH_PORT=${GITEA_SSH_PORT}
-      - GITEA__server__SSH_LISTEN_PORT=${GITEA_SSH_LISTEN_PORT}
-      - GITEA__service__DISABLE_REGISTRATION=${DISABLE_REGISTRATION}
-      - GITEA__repository__ENABLE_PUSH_CREATE_USER=${ENABLE_PUSH_CREATE_USER}
-      - GITEA__repository__ENABLE_PUSH_CREATE_ORG=${ENABLE_PUSH_CREATE_ORG}
-    volumes:
-      - ${GITEA_DATA_PATH}:/data
-      - ${GITEA_CONFIG_PATH}:/etc/gitea
-      - ${TIMEZONE_PATH}:/etc/timezone:ro
-      - ${LOCALTIME_PATH}:/etc/localtime:ro
-    ports:
-      - "${GITEA_HTTP_PORT}:3000"
-      - "${GITEA_SSH_PORT}:22"
-    networks:
-      - gitea
-
 networks:
   gitea:
     external: false
+
+services:
+  gitea:
+    image: docker.gitea.com/gitea:${GITEA_TAG:-1.27}
+    container_name: gitea
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - USER_UID=${USER_UID:-1000}
+      - USER_GID=${USER_GID:-1000}
+      - TZ=${TZ:-UTC}
+      - GITEA__database__DB_TYPE=postgres
+      - GITEA__database__HOST=db:5432
+      - GITEA__database__NAME=${POSTGRES_DB:-gitea}
+      - GITEA__database__USER=${POSTGRES_USER:-gitea}
+      - GITEA__database__PASSWD=${POSTGRES_PASSWORD:?database password required}
+      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
+      - GITEA__server__ROOT_URL=${GITEA_ROOT_URL}
+      - GITEA__server__PUBLIC_URL_DETECTION_MODE=${GITEA_PUBLIC_URL_DETECTION_MODE:-auto}
+      - GITEA__server__SSH_DOMAIN=${GITEA_SSH_DOMAIN:-${GITEA_DOMAIN}}
+      - GITEA__server__SSH_PORT=${GITEA_SSH_PORT:-2222}
+      - GITEA__server__SSH_LISTEN_PORT=22
+      - GITEA__service__DISABLE_REGISTRATION=${GITEA_DISABLE_REGISTRATION:-true}
+      - GITEA__repository__ENABLE_PUSH_CREATE_USER=${GITEA_ENABLE_PUSH_CREATE_USER:-true}
+      - GITEA__repository__ENABLE_PUSH_CREATE_ORG=${GITEA_ENABLE_PUSH_CREATE_ORG:-true}
+      # SSH commit signing verification. Users add an SSH key marked as a
+      # "signing key" in their profile, and Gitea verifies commits signed
+      # with it. See docs.gitea.com/administration/signing.
+      - GITEA__repository.signing__SIGNING_FORMAT=${GITEA_SIGNING_FORMAT:-ssh}
+      - GITEA__repository.signing__SIGNING_KEY=${GITEA_SIGNING_KEY:-none}
+      - GITEA__repository.signing__SIGNING_NAME=${GITEA_SIGNING_NAME:-}
+      - GITEA__repository.signing__SIGNING_EMAIL=${GITEA_SIGNING_EMAIL:-}
+      - GITEA__repository.signing__INITIAL_COMMIT=${GITEA_SIGNING_INITIAL_COMMIT:-never}
+      - GITEA__repository.signing__CRUD_ACTIONS=${GITEA_SIGNING_CRUD_ACTIONS:-pubkey,twofa,parentsigned}
+      - GITEA__repository.signing__MERGES=${GITEA_SIGNING_MERGES:-pubkey,twofa,basesigned,commitssigned}
+      - GITEA__repository.signing__WIKI=${GITEA_SIGNING_WIKI:-never}
+    networks:
+      - gitea
+    volumes:
+      - ${DOCKER_DATA_PATH}/data:/data
+    ports:
+      - "${GITEA_HTTP_PORT:-3000}:3000"
+      - "${GITEA_SSH_PORT:-2222}:22"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:${POSTGRES_TAG:-17}
+    container_name: gitea-db
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      POSTGRES_DB: ${POSTGRES_DB:-gitea}
+      POSTGRES_USER: ${POSTGRES_USER:-gitea}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?database password required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - gitea
+    volumes:
+      - ${DOCKER_DATA_PATH}/postgres:/var/lib/postgresql/data

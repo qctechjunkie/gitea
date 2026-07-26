@@ -3,12 +3,16 @@
 
 # Docker volumes and data directories
 data/
-config/
+postgres/
+gitea/
 
 # Backups
 *.tar.gz
 *.zip
 *.backup
+*.bak
+*.sql
+*.dump
 
 # Logs
 *.log
