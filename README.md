@@ -12,19 +12,25 @@ Self-hosted Git service using [Gitea](https://about.gitea.com/) with Docker Comp
 
 1. Clone or copy this repository
 2. Copy the example environment file and configure it:
+
    ```bash
    cp .env.example .env
    ```
+
 3. Edit `.env` — at minimum set `DOCKER_DATA_PATH` and `POSTGRES_PASSWORD`
 4. Create the data directories (owned by the UID/GID from `.env`):
+
    ```bash
    mkdir -p ${DOCKER_DATA_PATH}/{data,postgres}
    chown -R ${USER_UID}:${USER_GID} ${DOCKER_DATA_PATH}
    ```
+
 5. Start the stack:
+
    ```bash
    docker compose up -d
    ```
+
 6. Access Gitea at `http://<host>:${GITEA_HTTP_PORT}` and complete the first-run setup
 
 ## Configuration
@@ -49,7 +55,7 @@ All configuration is managed through the `.env` file. See `.env.example` for the
 
 ### Database
 
-Postgres credentials are shared between the `db` container and the `server` container via `.env`. `POSTGRES_PASSWORD` is required — the stack refuses to start without it.
+Postgres credentials are shared between the `db` container and the `gitea` container via `.env`. `POSTGRES_PASSWORD` is required — the stack refuses to start without it.
 
 ### User / Permissions
 
@@ -58,31 +64,38 @@ Postgres credentials are shared between the `db` container and the `server` cont
 ## Usage
 
 ### Starting the service
+
 ```bash
 docker compose up -d
 ```
 
 ### Viewing logs
+
 ```bash
 docker compose logs -f
 ```
 
 ### Stopping the service
+
 ```bash
 docker compose down
 ```
 
 ### Upgrading
+
 Bump `GITEA_TAG` in `.env` (or leave it on the major and let patches roll in), then:
+
 ```bash
 docker compose pull
 docker compose up -d
 ```
+
 Read the Gitea [release notes](https://blog.gitea.com/) before crossing a minor version.
 
 ### Backup
 
 Stop the stack (or use `pg_dump` for a hot Postgres backup), then archive both volumes:
+
 ```bash
 docker compose down
 tar -czf gitea-backup-$(date +%Y%m%d).tar.gz -C ${DOCKER_DATA_PATH} data postgres
@@ -90,6 +103,7 @@ docker compose up -d
 ```
 
 Hot backup (no downtime):
+
 ```bash
 docker compose exec -T db pg_dump -U ${POSTGRES_USER} ${POSTGRES_DB} \
   | gzip > gitea-db-$(date +%Y%m%d).sql.gz
@@ -102,16 +116,20 @@ This stack enables Gitea's SSH signature verification (Gitea 1.24+). Users can s
 ### Setup per-user (recommended)
 
 1. On your workstation, use an existing SSH key or generate one:
+
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_signing -C "your@email"
    ```
+
 2. Configure git to sign with SSH:
+
    ```bash
    git config --global gpg.format ssh
    git config --global user.signingkey ~/.ssh/id_ed25519_signing.pub
    git config --global commit.gpgsign true
    git config --global tag.gpgsign true
    ```
+
 3. In Gitea → **Settings → SSH / GPG Keys → Add Key**, paste the *public* key and check **Use as signing key** (this is the important part — without it, Gitea won't accept the key for verification).
 4. Commit → push. The commit shows **Verified** in the Gitea UI.
 
@@ -122,70 +140,121 @@ The verification policies (`GITEA_SIGNING_CRUD_ACTIONS`, `GITEA_SIGNING_MERGES`,
 To have **Gitea itself** sign initial commits, wiki edits, and merges (rather than just verifying user commits), set `GITEA_SIGNING_KEY` to a path inside the container instead of `none`:
 
 1. Generate a keypair on the host:
+
    ```bash
    ssh-keygen -t ed25519 -f ${DOCKER_DATA_PATH}/data/git/.ssh/gitea-signing -N ""
    chown -R ${USER_UID}:${USER_GID} ${DOCKER_DATA_PATH}/data/git/.ssh
    ```
+
 2. In `.env` (or Komodo Variables):
-   ```
+
+   ```bash
    GITEA_SIGNING_KEY=/data/git/.ssh/gitea-signing.pub
    GITEA_SIGNING_NAME=Gitea
    GITEA_SIGNING_EMAIL=gitea@your.domain
    GITEA_SIGNING_INITIAL_COMMIT=always
    ```
+
 3. Restart: `docker compose up -d`
 
 ## Migrating from SQLite to PostgreSQL
 
-If you're coming from the old SQLite-based setup, migrate the DB before switching. The cleanest path is [`pgloader`](https://pgloader.readthedocs.io/), which handles schema + data in one shot.
+If you're coming from the old SQLite-based setup, migrate the DB before switching. The reliable pattern is **schema-first, data-only**: let Gitea build its correct Postgres schema against an empty DB, then use [`pgloader`](https://pgloader.readthedocs.io/) to load only the data.
+
+> ⚠️ **Do NOT run pgloader in its default mode against Gitea.** It will mirror SQLite's `sqlite_autoindex_*` UNIQUE constraints as bare indexes, and Gitea's Postgres migrations will get stuck trying to drop them (`ERROR: cannot drop index ... because constraint ... requires it`). Use the schema-first workflow below.
 
 **Before you start:** back up your existing `data/` directory. Gitea stores its SQLite DB at `data/gitea/gitea.db`.
 
-1. **Stop the old Gitea container** (this ensures no writes are in flight):
+1. **Stop the old stack:**
+
    ```bash
    docker compose down
    ```
 
-2. **Copy the SQLite DB somewhere accessible** — e.g. into `${DOCKER_DATA_PATH}` so it lands next to the new setup:
+2. **Copy the SQLite DB somewhere pgloader can reach:**
+
    ```bash
    cp ${DOCKER_DATA_PATH}/data/gitea/gitea.db /tmp/gitea.db
+   chmod 644 /tmp/gitea.db
    ```
 
-3. **Start ONLY the new Postgres container** (the `server` will fail-and-restart while the DB is empty — that's fine):
+3. **Bring up an empty Postgres, then let Gitea create its schema:**
+
    ```bash
    docker compose up -d db
+   docker compose ps                       # wait for db to be healthy
+   docker compose up -d gitea
+   docker compose logs -f gitea            # watch until "Starting new Web server"
+   # Ctrl+C once it's up
    ```
 
-4. **Wait for the DB to be healthy:**
+4. **Stop just Gitea so pgloader has exclusive DB access** (keep `db` running):
+
    ```bash
-   docker compose ps
+   docker compose stop gitea
    ```
 
-5. **Run pgloader from a temporary container** — no host install needed. On Synology DSM (and any host where your user isn't in a `docker` group), prepend `sudo`:
+5. **Run pgloader in data-only mode** (on Synology DSM prepend `sudo` — DSM users aren't in a `docker` group). Confirm the network name first with `docker network ls | grep gitea`:
+
    ```bash
    docker run --rm --network gitea_gitea \
      -v /tmp/gitea.db:/tmp/gitea.db \
      dimitri/pgloader:latest \
-     pgloader sqlite:///tmp/gitea.db \
-       postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+     pgloader --with "data only" \
+              --with "disable triggers" \
+              --with "truncate" \
+              sqlite:///tmp/gitea.db \
+              postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
    ```
-   > The network name depends on how the stack was imported — `<project>_gitea` for docker compose, but Komodo may name it `<stack>_default` or similar. Confirm with `docker network ls | grep gitea`.
-   >
-   > If Gitea has ever booted against this Postgres and left tables behind, pgloader will error on constraint conflicts. Drop and recreate the DB first:
-   > ```bash
-   > docker exec -i gitea-db psql -U ${POSTGRES_USER} -d postgres \
-   >   -c "DROP DATABASE ${POSTGRES_DB};" \
-   >   -c "CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER};"
-   > ```
 
-6. **Start Gitea:**
+   If it complains about foreign keys, add `--with "concurrency = 1"` and rerun. `--with "truncate"` empties each table before inserting, so the load is idempotent — safe to rerun.
+
+6. **Reset the sequences.** SQLite has no sequences; every Postgres serial column now starts at 1, which collides with existing IDs on the next insert. Fix in one shot:
+
    ```bash
-   docker compose up -d
+   docker exec -i gitea-db psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} <<'SQL'
+   DO $$
+   DECLARE
+       r RECORD;
+   BEGIN
+       FOR r IN
+           SELECT c.relname AS seq, t.relname AS tbl, a.attname AS col
+           FROM pg_class c
+           JOIN pg_depend d ON d.objid = c.oid
+           JOIN pg_class t ON t.oid = d.refobjid
+           JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+           WHERE c.relkind = 'S'
+       LOOP
+           EXECUTE format('SELECT setval(%L, COALESCE((SELECT MAX(%I) FROM %I), 0) + 1, false)',
+                          r.seq, r.col, r.tbl);
+       END LOOP;
+   END $$;
+   SQL
    ```
 
-7. **Verify:** log in, browse a few repos, check user accounts, webhooks, and issue history. Once you're satisfied, remove `/tmp/gitea.db` and the old `data/gitea/gitea.db` file (leaving Gitea's other files under `data/` in place).
+7. **Start Gitea:**
 
-**Fallback:** if `pgloader` fails, Gitea's [built-in `dump` / restore](https://docs.gitea.com/administration/backup-and-restore) can migrate too, but it requires exporting the full instance, wiping, and restoring with the new DB. `pgloader` is simpler when it works.
+   ```bash
+   docker compose up -d gitea
+   docker compose logs -f gitea
+   ```
+
+8. **Verify:** log in, browse a few repos, check user accounts, webhooks, and issue history. Try creating a new issue/PR — if sequences weren't reset properly, you'll hit a duplicate-key error and know to rerun step 6. Once everything looks good, remove `/tmp/gitea.db` and (once you've confirmed no rollback is needed) the old `data/gitea/gitea.db`.
+
+### Recovering from a failed migration
+
+If Gitea is stuck in a restart loop with `cannot drop index ... because constraint ... requires it`, you loaded schema-first-not-followed and need to redo it:
+
+```bash
+docker compose down
+sudo rm -rf ${DOCKER_DATA_PATH}/postgres        # wipe the mangled DB
+```
+
+Then restart from step 3 above.
+
+### Fallback
+
+If `pgloader` still fails, Gitea's [built-in `dump` / restore](https://docs.gitea.com/administration/backup-and-restore) can migrate — it exports the full instance (DB + repos + config) to a zip, and you restore it against a fresh install pointed at Postgres. Slower but more forgiving.
 
 ## Deploying with Komodo
 
@@ -194,6 +263,7 @@ This stack is set up for [Komodo](https://komo.do) deployments:
 - The compose file uses `env_file: .env` plus a full `environment:` block, so Komodo can either mount `.env` from disk or inject each variable via its Variables UI.
 - `${POSTGRES_PASSWORD:?...}` fails fast if the password isn't set — Komodo surfaces the error immediately instead of starting a broken stack.
 - `DOCKER_DATA_PATH` is the single knob for where all state lives; point it at the host path Komodo manages for this stack.
+- `komodo_ui_compose.yaml` and `komodo.env` in this repo are the live production files — reference them for the exact shape Komodo expects.
 
 Import as a **Stack** in Komodo, wire up `.env` (or add each variable in the Variables tab), and deploy.
 
@@ -208,6 +278,7 @@ Put a reverse proxy (nginx-proxy-manager, Caddy, Traefik) in front for HTTPS.
 ## Initial Setup
 
 On first run, Gitea shows an install page:
+
 1. Navigate to the web UI
 2. Database settings are already populated from `.env` — just confirm
 3. Create the administrator account
@@ -225,24 +296,31 @@ If you migrated with pgloader, Gitea will pick up the existing DB and skip the i
 ## Troubleshooting
 
 ### Container won't start / permission errors
+
 Ensure `USER_UID` and `USER_GID` in `.env` match the owner of `${DOCKER_DATA_PATH}`:
+
 ```bash
 ls -ln ${DOCKER_DATA_PATH}
 ```
 
 ### Cannot connect to database
+
 - Check that `POSTGRES_PASSWORD` is set in `.env`
 - Confirm the `db` container is healthy: `docker compose ps`
 - Check logs: `docker compose logs db`
 
 ### SSH not reachable
+
 - Verify the host port matches `GITEA_SSH_PORT` and is open in your firewall
 - Confirm the port isn't already bound: `ss -tlnp | grep :${GITEA_SSH_PORT}`
 
-### pgloader migration errors
-- `Connection refused`: the Postgres container isn't ready yet — wait for `docker compose ps` to show it healthy
-- `network not found`: check the actual network name with `docker network ls | grep gitea`
-- `constraint violation`: pgloader occasionally trips on Gitea's foreign keys; re-run with `--with "data only"` after first creating the schema by letting Gitea start against an empty DB, then wiping it
+### `docker: permission denied ... /var/run/docker.sock` (Synology DSM)
+
+DSM doesn't put non-`root` users in a `docker` group. Prepend `sudo` to any `docker` command, or add your user to the `docker` group (Package Center → Container Manager → User permissions).
+
+### `cannot drop index ... because constraint ... requires it`
+
+You ran `pgloader` in its default mode against Gitea. See [Recovering from a failed migration](#recovering-from-a-failed-migration) above.
 
 ## Documentation
 
@@ -250,6 +328,7 @@ ls -ln ${DOCKER_DATA_PATH}
 - [Docker Installation Guide](https://docs.gitea.com/installation/install-with-docker)
 - [Config Cheat Sheet](https://docs.gitea.com/administration/config-cheat-sheet)
 - [Backup and Restore](https://docs.gitea.com/administration/backup-and-restore)
+- [Signing Commits](https://docs.gitea.com/administration/signing)
 
 ## License
 
